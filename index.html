@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SCI Final Scanner</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #050505;
+            --panel-bg: rgba(10, 10, 10, 0.95);
+            --accent: #ffffff;
+            --r-color: #ff3333;
+            --g-color: #33ff33;
+            --b-color: #3399ff;
+            --inactive: #333;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: white;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Видео слой */
+        #viewport {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            background: #000;
+        }
+        #video { display: none; }
+        #canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        #overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+        }
+
+        /* Нижняя панель */
+        .dock {
+            background: var(--panel-bg);
+            padding: 20px;
+            border-top: 1px solid #222;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            z-index: 10;
+        }
+
+        /* Индикаторы каналов */
+        .status-row {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+        }
+
+        .channel-indicator {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.3;
+            transition: opacity 0.3s, transform 0.3s;
+        }
+
+        .channel-indicator.active {
+            opacity: 1.0;
+            transform: scale(1.1);
+        }
+
+        .circle {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background-color: var(--inactive);
+            box-shadow: 0 0 0 rgba(255,255,255,0);
+            transition: all 0.3s ease;
+        }
+
+        /* Специфичные цвета для индикаторов */
+        .ch-r .circle { border: 2px solid var(--r-color); }
+        .ch-r.active .circle { background: var(--r-color); box-shadow: 0 0 15px var(--r-color); }
+
+        .ch-g .circle { border: 2px solid var(--g-color); }
+        .ch-g.active .circle { background: var(--g-color); box-shadow: 0 0 15px var(--g-color); }
+
+        .ch-b .circle { border: 2px solid var(--b-color); }
+        .ch-b.active .circle { background: var(--b-color); box-shadow: 0 0 15px var(--b-color); }
+
+        /* Результат */
+        .result-box {
+            width: 100%;
+            background: #111;
+            border: 1px dashed #444;
+            padding: 15px;
+            box-sizing: border-box;
+            text-align: center;
+            font-family: monospace;
+            font-size: 14px;
+            min-height: 50px;
+            color: #aaa;
+            border-radius: 6px;
+        }
+        
+        .result-box.success {
+            border-color: var(--g-color);
+            color: white;
+            background: rgba(0, 50, 0, 0.2);
+        }
+
+        /* Кнопки */
+        .actions {
+            display: flex;
+            gap: 15px;
+            width: 100%;
+        }
+        
+        .btn-main {
+            flex: 1;
+            padding: 12px;
+            background: transparent;
+            border: 1px solid #444;
+            color: white;
+            font-size: 14px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        
+        .btn-main:active { background: #222; }
+        #reset-btn { color: var(--r-color); border-color: var(--r-color); }
+
+        /* Скрытый input */
+        #file-input { display: none; }
+
+    </style>
+</head>
+<body>
+
+<div id="viewport">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="canvas"></canvas>
+    <canvas id="overlay"></canvas>
+</div>
+
+<div class="dock">
+    <!-- Индикаторы -->
+    <div class="status-row">
+        <div class="channel-indicator ch-r" id="ind-r">
+            <div class="circle"></div>
+            <span style="font-size: 12px; font-weight:bold;">R</span>
+        </div>
+        <div class="channel-indicator ch-g" id="ind-g">
+            <div class="circle"></div>
+            <span style="font-size: 12px; font-weight:bold;">G</span>
+        </div>
+        <div class="channel-indicator ch-b" id="ind-b">
+            <div class="circle"></div>
+            <span style="font-size: 12px; font-weight:bold;">B</span>
+        </div>
+    </div>
+
+    <!-- Результат -->
+    <div class="result-box" id="result-box">
+        Наведите на QR-код...
+    </div>
+
+    <!-- Кнопки -->
+    <div class="actions">
+        <button class="btn-main" onclick="document.getElementById('file-input').click()">📂 Загрузить фото</button>
+        <button class="btn-main" id="reset-btn" onclick="resetScanner()">↻ Сброс</button>
+    </div>
+    
+    <input type="file" id="file-input" accept="image/*">
+</div>
+
+<script>
+    // === 1. ФИКСИРОВАННЫЕ ПАРАМЕТРЫ (HARDCODED) ===
+    const CONFIG = {
+        R: {
+            offset: 56, gain: 0.5, subG: 0.10, subB: 0.20, gamma: 0.1, color: '#ff3333'
+        },
+        G: {
+            offset: 28, gain: 1.1, subR: 0.18, subB: 0.33, gamma: 0.2, color: '#33ff33'
+        },
+        B: {
+            offset: 14, gain: 1.7, subR: 0.05, subG: 0.13, gamma: 1.7, color: '#3399ff'
+        }
+    };
+
+    // === 2. СОСТОЯНИЕ ПРИЛОЖЕНИЯ ===
+    const state = {
+        mode: 'camera', // 'camera' | 'image'
+        scanning: true,
+        freezeFrame: null, // ImageData для накопительного сканирования
+        results: { R: null, G: null, B: null },
+        currentChannelIndex: 0, // 0=R, 1=G, 2=B
+        channels: ['R', 'G', 'B']
+    };
+
+    // === DOM ЭЛЕМЕНТЫ ===
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const overlay = document.getElementById('overlay');
+    const overlayCtx = overlay.getContext('2d');
+    const resultBox = document.getElementById('result-box');
+    const fileInput = document.getElementById('file-input');
+
+    let audioCtx = null;
+
+    // === АУДИО ОБРАТНАЯ СВЯЗЬ ===
+    function initAudio() { if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    
+    function playSound(type) {
+        initAudio();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.connect(g); g.connect(audioCtx.destination);
+        osc.type = "sine";
+        
+        if (type === 'lock') {
+            osc.frequency.value = 440; // Низкий тон
+            g.gain.value = 0.05;
+            osc.start(); osc.stop(audioCtx.currentTime + 0.05);
+        } else if (type === 'victory') {
+            osc.frequency.value = 880; // Победный бип
+            g.gain.value = 0.05;
+            osc.start(); 
+            setTimeout(() => { osc.frequency.value = 1100; }, 100);
+            osc.stop(audioCtx.currentTime + 0.3);
+        }
+    }
+
+    // === ИНИЦИАЛИЗАЦИЯ ===
+    async function init() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                video.play();
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                overlay.width = video.videoWidth;
+                overlay.height = video.videoHeight;
+                loop();
+            };
+        } catch (e) {
+            resultBox.innerText = "Ошибка камеры: " + e.message;
+            resultBox.style.color = "red";
+        }
+    }
+
+    // === ОБРАБОТКА ИЗОБРАЖЕНИЙ ===
+    fileInput.addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = evt => {
+            const img = new Image();
+            img.onload = () => {
+                state.mode = 'image';
+                state.scanning = true;
+                state.freezeFrame = null; // Сброс
+                
+                canvas.width = img.width;
+                canvas.height = img.height;
+                overlay.width = img.width;
+                overlay.height = img.height;
+                
+                ctx.drawImage(img, 0, 0);
+                state.freezeFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                resetResults();
+                processLoop();
+            };
+            img.src = evt.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+
+    // === ОСНОВНОЙ ЦИКЛ ===
+    function loop() {
+        if (state.mode === 'camera') {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                // Если мы в режиме "захвата" (уже нашли что-то), используем замороженный кадр
+                if (state.freezeFrame) {
+                    processLoop();
+                } else {
+                    // Захват живого кадра
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    // Пытаемся найти хоть что-то в текущем канале
+                    const tempData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    scanChannel(tempData);
+                }
+            }
+            requestAnimationFrame(loop);
+        }
+    }
+
+    function processLoop() {
+        if (!state.scanning) return;
+        
+        const sourceData = state.freezeFrame;
+        if(!sourceData) return;
+
+        // Визуализация текущего обрабатываемого канала
+        const ch = state.channels[state.currentChannelIndex];
+        
+        // Если текущий канал уже найден, переключаемся на следующий
+        if (state.results[ch]) {
+            advanceChannel();
+            requestAnimationFrame(processLoop);
+            return;
+        }
+
+        // Обработка
+        const processedData = new ImageData(new Uint8ClampedArray(sourceData.data), sourceData.width, sourceData.height);
+        applySCI(processedData, ch);
+        applyBradley(processedData);
+        
+        // Отображение на канвасе (чтобы пользователь видел процесс)
+        ctx.putImageData(processedData, 0, 0);
+
+        // Попытка декодирования
+        const code = jsQR(processedData.data, processedData.width, processedData.height);
+        
+        if (code) {
+            // Успешное считывание канала
+            state.results[ch] = code.data;
+            document.getElementById(`ind-${ch.toLowerCase()}`).classList.add('active');
+            drawOverlay(code.location, ch);
+            playSound('lock');
+
+            // Проверка на полный сбор
+            checkCompletion();
+            
+            // Если это первый захват с камеры - замораживаем кадр
+            if (state.mode === 'camera' && !state.freezeFrame) {
+                state.freezeFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            }
+            
+            advanceChannel();
+        } else {
+            advanceChannel();
+            // Если камера и ничего не нашли - чистим оверлей
+            if(state.mode === 'camera' && !state.freezeFrame) overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+            
+            // Продолжаем цикл для статичных изображений
+            if (state.mode === 'image') requestAnimationFrame(processLoop);
+        }
+    }
+
+    function advanceChannel() {
+        state.currentChannelIndex = (state.currentChannelIndex + 1) % 3;
+    }
+
+    // === ДВИЖОК SCI ===
+    function applySCI(imageData, channel) {
+        const d = imageData.data;
+        const cfg = CONFIG[channel];
+        
+        for (let i = 0; i < d.length; i += 4) {
+            let r = d[i], g = d[i+1], b = d[i+2];
+            let val = 0;
+
+            // Выбор базового канала и вычитание помех
+            if (channel === 'R') val = r - (g * cfg.subG + b * cfg.subB);
+            if (channel === 'G') val = g - (r * cfg.subR + b * cfg.subB);
+            if (channel === 'B') val = b - (r * cfg.subR + g * cfg.subG);
+
+            // Offset
+            val -= cfg.offset;
+            
+            // Gain
+            val *= cfg.gain;
+
+            // Gamma
+            val = 255 * Math.pow(Math.max(0, val / 255), cfg.gamma);
+
+            // Clamp
+            val = Math.max(0, Math.min(255, val));
+
+            d[i] = d[i+1] = d[i+2] = val;
+        }
+    }
+
+    // === АДАПТИВНАЯ БИНАРИЗАЦИЯ (БРЭДЛИ) ===
+    function applyBradley(imageData) {
+        const w = imageData.width;
+        const h = imageData.height;
+        const d = imageData.data;
+        const S = w / 8; // Размер окна
+        const s2 = Math.floor(S/2);
+        const t = 0.15; // Порог чувствительности
+
+        // Интегральное изображение (Integral Image)
+        const integral = new Uint32Array(w * h);
+        
+        // Заполнение интегрального массива
+        for (let y = 0; y < h; y++) {
+            let sum = 0;
+            for (let x = 0; x < w; x++) {
+                const idx = y * w + x;
+                // Берем яркость из красного канала (там уже grayscale)
+                sum += d[idx * 4]; 
+                integral[idx] = sum + (y > 0 ? integral[idx - w] : 0);
+            }
+        }
+
+        // Применение порога
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const idx = (y * w + x) * 4;
+                
+                // Границы окна
+                const x1 = Math.max(0, x - s2);
+                const y1 = Math.max(0, y - s2);
+                const x2 = Math.min(w - 1, x + s2);
+                const y2 = Math.min(h - 1, y + s2);
+
+                // Сумма пикселей в окне
+                const count = (x2 - x1) * (y2 - y1);
+                const area = integral[y2 * w + x2] 
+                           - (y1 > 0 ? integral[(y1 - 1) * w + x2] : 0)
+                           - (x1 > 0 ? integral[y2 * w + (x1 - 1)] : 0)
+                           + (y1 > 0 && x1 > 0 ? integral[(y1 - 1) * w + (x1 - 1)] : 0);
+                
+                const pixel = d[idx];
+                // Брэдли: если pixel < (area/count) * (1 - t)
+                if (pixel * count < area * (1.0 - t)) {
+                    d[idx] = d[idx+1] = d[idx+2] = 0; // Черный
+                } else {
+                    d[idx] = d[idx+1] = d[idx+2] = 255; // Белый
+                }
+            }
+        }
+    }
+
+    // === UI И ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+    function drawOverlay(location, channel) {
+        overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(location.topLeftCorner.x, location.topLeftCorner.y);
+        overlayCtx.lineTo(location.topRightCorner.x, location.topRightCorner.y);
+        overlayCtx.lineTo(location.bottomRightCorner.x, location.bottomRightCorner.y);
+        overlayCtx.lineTo(location.bottomLeftCorner.x, location.bottomLeftCorner.y);
+        overlayCtx.closePath();
+        overlayCtx.lineWidth = 4;
+        overlayCtx.strokeStyle = CONFIG[channel].color;
+        overlayCtx.stroke();
+    }
+
+    function checkCompletion() {
+        if (state.results.R && state.results.G && state.results.B) {
+            state.scanning = false;
+            
+            // Сравнение результатов
+            if (state.results.R === state.results.G && state.results.G === state.results.B) {
+                resultBox.innerHTML = `<strong>УСПЕХ:</strong><br>${state.results.R}`;
+            } else {
+                resultBox.innerHTML = `
+                    <div style="color:#ff3333">R: ${state.results.R}</div>
+                    <div style="color:#33ff33">G: ${state.results.G}</div>
+                    <div style="color:#3399ff">B: ${state.results.B}</div>
+                `;
+            }
+            resultBox.classList.add('success');
+            playSound('victory');
+        }
+    }
+
+    function resetScanner() {
+        state.freezeFrame = null;
+        state.scanning = true;
+        state.results = { R: null, G: null, B: null };
+        state.currentChannelIndex = 0;
+        
+        resetResults();
+        
+        if(state.mode === 'image') {
+            // Перезапуск обработки для статичной картинки
+            ctx.putImageData(state.freezeFrame, 0, 0); // Вернем оригинал если есть, или пусто
+            // Тут нужно заново загрузить файл, так как freezeFrame сброшен. 
+            // Или просто перезапустить loop, если это камера.
+        }
+        resultBox.innerText = "Наведите на QR-код...";
+        resultBox.classList.remove('success');
+        overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+    }
+
+    function resetResults() {
+        document.getElementById('ind-r').classList.remove('active');
+        document.getElementById('ind-g').classList.remove('active');
+        document.getElementById('ind-b').classList.remove('active');
+    }
+
+    // Запуск
+    init();
+
+</script>
+</body>
+</html>
