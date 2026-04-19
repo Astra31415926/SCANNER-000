@@ -310,9 +310,8 @@
             const input = imgData.data;
             const output = new Uint8ClampedArray(w * h * 4);
             const intImg = new Int32Array(w * h);
-            const s = Math.floor(w / 8), t = 15; // Window size, threshold %
+            const s = Math.floor(w / 8), t = 15; 
 
-            // Compute integral image
             for (let y = 0; y < h; y++) {
                 let sum = 0;
                 for (let x = 0; x < w; x++) {
@@ -321,7 +320,6 @@
                 }
             }
 
-            // Apply threshold
             for (let y = 0; y < h; y++) {
                 for (let x = 0; x < w; x++) {
                     const x1 = Math.max(x - s, 0), x2 = Math.min(x + s, w - 1);
@@ -382,13 +380,30 @@
         }
 
         // === 5. SCI PROCESSING & SCANNING ===
+        
+        // Helper to update UI instantly when a channel is found
+        function updateLiveStatus() {
+            els.resultIndicators.style.opacity = 1;
+            ['r', 'g', 'b'].forEach(ch => {
+                const el = els['res' + ch.toUpperCase()];
+                const indicator = el.querySelector('.indicator');
+                const text = el.querySelector('span');
+                
+                if(results[ch]) {
+                    text.textContent = results[ch];
+                    indicator.className = 'indicator active-'+ch;
+                    el.style.opacity = 1;
+                    // Also fill the hidden input so we keep the data
+                    els[ch].value = results[ch];
+                }
+            });
+        }
+
         function processImageData(img, w, h, isFileScan) {
             // --- START SCI MODEL INTEGRATION ---
             const d = img.data;
-            // Create a copy of source data to prevent "dirty reads" when modifying in-place
-            const src = new Uint8ClampedArray(d);
+            const src = new Uint8ClampedArray(d); // Copy source to avoid dirty reads
 
-            // SCI Coefficients from successful tests
             const sciConfig = {
                 R: { gain: 0.5, offset: 56, gamma: 0.1, kG: 0.10, kB: 0.20 },
                 G: { gain: 1.1, offset: 28, gamma: 0.2, kR: 0.18, kB: 0.33 },
@@ -398,44 +413,46 @@
             for (let i = 0; i < d.length; i += 4) {
                 let r_in = src[i], g_in = src[i+1], b_in = src[i+2];
 
-                // Process RED Channel
-                // R_out = (R_in - (G_in*kG + B_in*kB)) * Gain + Offset
+                // RED
                 let valR = (r_in - (g_in * sciConfig.R.kG + b_in * sciConfig.R.kB)) * sciConfig.R.gain + sciConfig.R.offset;
                 valR = Math.max(0, Math.min(255, valR));
-                // Gamma: 255 * (val/255)^(1/gamma)
                 valR = 255 * Math.pow(valR / 255, 1 / sciConfig.R.gamma);
                 d[i] = Math.max(0, Math.min(255, valR));
 
-                // Process GREEN Channel
+                // GREEN
                 let valG = (g_in - (r_in * sciConfig.G.kR + b_in * sciConfig.G.kB)) * sciConfig.G.gain + sciConfig.G.offset;
                 valG = Math.max(0, Math.min(255, valG));
                 valG = 255 * Math.pow(valG / 255, 1 / sciConfig.G.gamma);
                 d[i+1] = Math.max(0, Math.min(255, valG));
 
-                // Process BLUE Channel
+                // BLUE
                 let valB = (b_in - (r_in * sciConfig.B.kR + g_in * sciConfig.B.kG)) * sciConfig.B.gain + sciConfig.B.offset;
                 valB = Math.max(0, Math.min(255, valB));
                 valB = 255 * Math.pow(valB / 255, 1 / sciConfig.B.gamma);
                 d[i+2] = Math.max(0, Math.min(255, valB));
             }
-            // --- END SCI MODEL INTEGRATION ---
+            // --- END SCI MODEL ---
 
-            // Now scan the corrected channels
             let foundAny = false;
             [0, 1, 2].forEach(idx => {
                 const ch = ['r', 'g', 'b'][idx];
                 if (results[ch]) return; // Skip if already found
                 
-                // Apply Bradley to the SCI-cleaned channel data
                 const mono = applyBradley(img, idx);
                 const code = jsQR(mono, w, h, { inversionAttempts: "attemptBoth" });
-                if (code) { results[ch] = code.data; foundAny = true; }
+                
+                if (code) { 
+                    results[ch] = code.data; 
+                    foundAny = true; 
+                    updateLiveStatus(); // Update UI immediately
+                }
             });
             
             if(foundAny) {
                 els.viewfinder.classList.add('targeting'); 
-                // Logic: If Blue found (priority) OR all found -> finish
-                if(results.b || (results.r && results.g && results.b)) {
+                
+                // MODIFIED LOGIC: Only finish if ALL 3 channels are found
+                if(results.r && results.g && results.b) {
                     analysisReady = true;
                     if(!isFileScan) triggerCaptureSequence();
                 }
@@ -465,7 +482,7 @@
                     els.flash.classList.remove('flash-anim');
                     els.centralContainer.classList.remove('scan-active');
                     els.viewfinder.classList.remove('targeting');
-                    updateResultUI();
+                    updateResultUI(); // Final UI update
                 }, 400);
             }, 2600);
         }
@@ -506,7 +523,7 @@
                     text.textContent = translations[currentLang].res_fail;
                 }
             });
-            generateQR(); // Regenerate merged QR from results
+            generateQR();
             document.body.classList.remove('mode-camera');
         }
 
@@ -541,8 +558,7 @@
                 cv.getContext('2d').drawImage(els.video, (els.video.videoWidth-s)/2, (els.video.videoHeight-s)/2, s, s, 0, 0, 480, 480);
                 
                 if(!analysisReady) {
-                   const found = processImageData(cv.getContext('2d').getImageData(0,0,480,480), 480, 480, false);
-                   if(found) els.viewfinder.classList.add('targeting');
+                   processImageData(cv.getContext('2d').getImageData(0,0,480,480), 480, 480, false);
                 }
             }
             requestAnimationFrame(scanFrame);
